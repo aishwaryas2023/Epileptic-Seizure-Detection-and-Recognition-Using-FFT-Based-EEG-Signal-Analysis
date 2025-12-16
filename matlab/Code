@@ -1,0 +1,195 @@
+clc;
+clear;
+close all;
+
+disp('--- EEG Data Processing Started ---');
+
+%% Step 1: Load EEG Data
+data = readtable('Epileptic Seizure Recognition.csv');
+
+% Remove first unnamed column (if exists)
+data(:,1) = [];
+
+% Separate EEG signals and labels
+[numSamples, numCols] = size(data);
+eegSignals = data{:, 1:numCols-1};  % all except last column
+labels = data{:, numCols};          % last column = label
+
+[numSamples, numPoints] = size(eegSignals);
+disp(['Total samples: ', num2str(numSamples)]);
+disp(['EEG points per sample: ', num2str(numPoints)]);
+
+%% Step 2: FFT-Based Bandpass Filter (0.5–40 Hz)
+fs = 173.61; % Sampling frequency
+low_cutoff = 0.5;
+high_cutoff = 40;
+
+filteredEEG = zeros(size(eegSignals));
+
+disp('Filtering all samples...');
+
+for i = 1:numSamples
+    x = eegSignals(i,:);
+    X = fft(x);
+    N = length(X);
+    f = (0:N-1)*(fs/N);
+
+    % Bandpass mask
+    mask = (f >= low_cutoff & f <= high_cutoff) | ...
+           (f >= fs-high_cutoff & f <= fs-low_cutoff);
+
+    X_filtered = X .* mask;
+    filteredEEG(i,:) = real(ifft(X_filtered));
+
+    % Progress every 10%
+    if mod(i, round(numSamples/10)) == 0
+        disp(['Filtering progress: ', num2str(round(100*i/numSamples)), '%']);
+    end
+end
+
+disp('FFT-based bandpass filtering completed.');
+
+%% Step 3: Segmentation
+segments = filteredEEG;
+disp('Signal segmentation completed (each row = one segment).');
+t = (0:numPoints-1)/fs;
+
+%% === Additional Plots (for first sample) ===
+samplePlot = 1;
+
+figure;
+subplot(4,1,1);
+plot(t, eegSignals(samplePlot,:),'b');
+title(['Raw EEG Signal - Sample ', num2str(samplePlot)]);
+xlabel('Time (s)'); ylabel('Amplitude (\muV)');
+
+subplot(4,1,2);
+plot(t, filteredEEG(samplePlot,:),'g');
+title('Filtered EEG Signal (0.5-40 Hz)');
+xlabel('Time (s)'); ylabel('Amplitude (\muV)');
+
+subplot(4,1,3);
+plot(t, segments(samplePlot,:),'k');
+title('Segmented EEG Signal');
+xlabel('Time (s)'); ylabel('Amplitude (\muV)');
+
+% FFT plot
+Y = fft(segments(samplePlot,:));
+P2 = abs(Y / N);
+P1 = P2(1:floor(N/2) + 1);
+P1(2:end-1) = 2 * P1(2:end-1);
+f_axis = fs * (0:floor(N/2)) / N;
+
+
+subplot(4,1,4);
+plot(f_axis, P1,'r');
+title('FFT of EEG Segment');
+xlabel('Frequency (Hz)'); ylabel('|Amplitude|');
+
+%% Step 4: FFT Feature Extraction
+N = numPoints;
+f = fs*(0:(N/2))/N;
+
+meanFreq = zeros(numSamples,1);
+peakFreq = zeros(numSamples,1);
+bandPower = zeros(numSamples,1);
+
+disp('Extracting FFT features for all samples...');
+
+for i = 1:numSamples
+    N = size(segments, 2);
+    Y = fft(segments(i, :));
+    P2 = abs(Y / N);
+    P1 = P2(1:floor(N/2) + 1);
+    if numel(P1) > 2
+        P1(2:end-1) = 2 * P1(2:end-1);
+    end
+
+    % Mean frequency
+    if sum(P1) ~= 0
+        meanFreq(i) = sum(f .* P1) / sum(P1);
+    else
+        meanFreq(i) = 0;
+    end
+
+    % Peak frequency
+    [~, idx] = max(P1);
+    peakFreq(i) = f(idx);
+
+    % Band power (0.5–40 Hz)
+    bandMask = (f >= low_cutoff & f <= high_cutoff);
+    bandPower(i) = sum(P1(bandMask).^2);
+end
+
+disp('FFT features extracted successfully.');
+
+%% Step 5: Seizure Detection
+thresholdPower = mean(bandPower) + 2*std(bandPower);
+thresholdFreq = 15;
+
+seizureDetected = (bandPower > thresholdPower & peakFreq < thresholdFreq);
+
+% Identify seizure and non-seizure indices
+seizureIndices = find(seizureDetected);
+normalIndices = find(~seizureDetected);
+
+% Select up to 4 seizures and 4 normal samples
+numSeizuresToShow = min(4, length(seizureIndices));
+numNormalsToShow = min(4, length(normalIndices));
+
+samplesToShow = [seizureIndices(1:numSeizuresToShow); normalIndices(1:numNormalsToShow)];
+labelsToShow = seizureDetected(samplesToShow);
+
+%% Step 6: Display Results in Command Window with Reason
+disp('--- Sample Feature Values & Seizure Detection ---');
+
+meanBandPowerNormal = mean(bandPower(~seizureDetected));
+meanPeakFreqNormal = mean(peakFreq(~seizureDetected));
+
+for k = 1:length(samplesToShow)
+    i = samplesToShow(k);
+    fprintf('\nSample #%d\n', i);
+    fprintf('  Mean Frequency: %.2f Hz\n', meanFreq(i));
+    fprintf('  Peak Frequency: %.2f Hz\n', peakFreq(i));
+    fprintf('  Band Power: %.4f\n', bandPower(i));
+    fprintf('  Label (Original): %d\n', labels(i));
+    if seizureDetected(i)
+        fprintf('  !!! Seizure Detected !!!\n');
+        fprintf('  Reason: Band Power is higher (%.2f vs %.2f) and Peak Frequency is lower (%.2f Hz vs %.2f Hz) than normal.\n', ...
+            bandPower(i), meanBandPowerNormal, peakFreq(i), meanPeakFreqNormal);
+    else
+        fprintf('  No Seizure Detected\n');
+    end
+end
+
+%% Step 7: Save Results
+featureTable = table(meanFreq, peakFreq, bandPower, labels, seizureDetected, ...
+    'VariableNames', {'Mean_Freq', 'Peak_Freq', 'Band_Power', 'Label', 'Seizure'});
+writetable(featureTable, 'EEG_FFT_Features_Seizure.csv');
+
+%% Step 8: Plot EEG Segments (Seizure + Normal)
+figure;
+numSamplesToPlot = length(samplesToShow);
+rows = ceil(numSamplesToPlot/2);
+cols = 2;
+
+for k = 1:numSamplesToPlot
+    i = samplesToShow(k);
+    subplot(rows, cols, k);
+    plot(t, segments(i,:), 'b'); hold on;
+    if seizureDetected(i)
+        plot(t, segments(i,:), 'r', 'LineWidth', 1.2);
+        title(['Sample ', num2str(i), ' - Seizure Detected']);
+    else
+        title(['Sample ', num2str(i), ' - Normal']);
+    end
+    xlabel('Time (s)'); ylabel('Amplitude (\muV)');
+end
+
+%% Step 9: Summary
+disp('--------------------------------------');
+disp('All processing steps completed successfully!');
+disp(['Total samples processed: ', num2str(numSamples)]);
+disp('Feature file generated: EEG_FFT_Features_Seizure.csv');
+disp('All plots displayed.');
+disp('--------------------------------------');
