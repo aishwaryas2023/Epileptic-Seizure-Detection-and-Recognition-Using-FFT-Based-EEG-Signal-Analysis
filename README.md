@@ -78,15 +78,6 @@ The project is implemented in MATLAB using EEG signal processing techniques.
 The dataset used in this project is publicly available.  
 Due to size and licensing constraints, the dataset is not included in this repository.
 
-
-## Contributors
-
-- Aishwarya S 
-- Harini S
-- Swetha CA 
-
----
-
 ## License
 
 This project is licensed under the MIT License.
